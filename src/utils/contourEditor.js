@@ -9,14 +9,26 @@ export class ContourEditor {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true })
     this.imageData = imageData
     this.segmentationData = segmentationData
-    this.originalImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height)
+    // 如果没有提供原始图像数据，创建空的
+    if (imageData) {
+      this.originalImageData = imageData;
+    } else {
+      this.originalImageData = this.ctx.createImageData(canvasElement.width, canvasElement.height);
+    }
     
     this.contourColor = '#00FF00'
     this.contourWidth = 3
     this.contourOpacity = 0.5
     this.isDragging = false
     this.dragOffset = { x: 0, y: 0 }
+    this.selectedPoint = null
     this.contourPoints = [] // 存储可拖动的控制点
+    
+    // 绑定方法到当前实例
+    this.onMouseDown = this.onMouseDown.bind(this);
+    this.onMouseMove = this.onMouseMove.bind(this);
+    this.onMouseUp = this.onMouseUp.bind(this);
+    this.onMouseLeave = this.onMouseLeave.bind(this);
     
     this.initEventListeners()
   }
@@ -25,10 +37,30 @@ export class ContourEditor {
    * 初始化事件监听
    */
   initEventListeners() {
-    this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e))
-    this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e))
-    this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e))
-    this.canvas.addEventListener('mouseleave', (e) => this.onMouseLeave(e))
+    // 先移除已有的监听器，避免重复绑定
+    this.removeEventListeners();
+    
+    // 直接绑定方法，确保this指向正确
+    this.canvas.addEventListener('mousedown', this.onMouseDown)
+    this.canvas.addEventListener('mousemove', this.onMouseMove)
+    this.canvas.addEventListener('mouseup', this.onMouseUp)
+    this.canvas.addEventListener('mouseleave', this.onMouseLeave)
+    
+    console.log('ContourEditor: 事件监听器已初始化');
+  }
+  
+  /**
+   * 移除事件监听
+   */
+  removeEventListeners() {
+    try {
+      this.canvas.removeEventListener('mousedown', this.onMouseDown)
+      this.canvas.removeEventListener('mousemove', this.onMouseMove)
+      this.canvas.removeEventListener('mouseup', this.onMouseUp)
+      this.canvas.removeEventListener('mouseleave', this.onMouseLeave)
+    } catch (e) {
+      // 忽略可能的错误，比如监听器尚未绑定
+    }
   }
 
   /**
@@ -173,7 +205,7 @@ export class ContourEditor {
   /**
    * 查找最近的控制点
    */
-  findNearestPoint(x, y, threshold = 10) {
+  findNearestPoint(x, y, threshold = 15) { // 增大阈值，更容易找到控制点
     let nearest = null
     let minDist = threshold
 
@@ -192,12 +224,14 @@ export class ContourEditor {
    * 鼠标按下事件
    */
   onMouseDown(e) {
+    console.log('ContourEditor: 鼠标按下');
     const rect = this.canvas.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
     const nearest = this.findNearestPoint(x, y)
     if (nearest) {
+      console.log('ContourEditor: 找到了控制点，开始拖拽');
       this.isDragging = true
       this.dragOffset.x = x - nearest.x
       this.dragOffset.y = y - nearest.y
@@ -209,24 +243,26 @@ export class ContourEditor {
    * 鼠标移动事件
    */
   onMouseMove(e) {
-    if (!this.isDragging || !this.selectedPoint) return
+    if (this.isDragging && this.selectedPoint) {
+      console.log('ContourEditor: 鼠标移动，拖拽中');
+      const rect = this.canvas.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
 
-    const rect = this.canvas.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+      // 更新点的位置
+      this.selectedPoint.x = x - this.dragOffset.x
+      this.selectedPoint.y = y - this.dragOffset.y
 
-    // 更新点的位置
-    this.selectedPoint.x = x - this.dragOffset.x
-    this.selectedPoint.y = y - this.dragOffset.y
-
-    // 重新绘制
-    this.redraw()
+      // 重新绘制
+      this.redraw()
+    }
   }
 
   /**
    * 鼠标释放事件
    */
   onMouseUp(e) {
+    console.log('ContourEditor: 鼠标释放');
     this.isDragging = false
     this.selectedPoint = null
   }
@@ -235,6 +271,7 @@ export class ContourEditor {
    * 鼠标离开事件
    */
   onMouseLeave(e) {
+    console.log('ContourEditor: 鼠标离开');
     this.isDragging = false
     this.selectedPoint = null
   }

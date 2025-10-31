@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>拖拽测试</title>
+  <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/axios@1.5.0/dist/axios.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    canvas {
+      border: 1px solid #ddd;
+      cursor: crosshair;
+      background: #fafafa;
+    }
+    .controls {
+      margin-top: 20px;
+    }
+    button {
+      padding: 8px 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="container">
+    <h1>Canvas拖拽测试</h1>
+    <canvas ref="canvas" width="600" height="400"></canvas>
+    <div class="controls">
+      <button @click="addRandomPoints">添加随机点</button>
+      <button @click="clearPoints">清空点</button>
+      <p>点击红色点并拖动来移动它们</p>
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, onMounted } = Vue
+
+    createApp({
+      setup() {
+        const canvas = ref(null)
+        const points = ref([])
+        const isDragging = ref(false)
+        const dragIndex = ref(-1)
+        const dragOffset = { x: 0, y: 0 }
+        const ctx = ref(null)
+
+        // 初始化Canvas
+        const initCanvas = () => {
+          if (!canvas.value) return
+          ctx.value = canvas.value.getContext('2d')
+          drawCanvas()
+        }
+
+        // 绘制整个Canvas
+        const drawCanvas = () => {
+          if (!ctx.value) return
+          
+          // 清空画布
+          ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
+          
+          // 绘制连接线
+          if (points.value.length > 1) {
+            ctx.value.strokeStyle = '#007bff'
+            ctx.value.lineWidth = 2
+            ctx.value.beginPath()
+            points.value.forEach((point, index) => {
+              if (index === 0) {
+                ctx.value.moveTo(point.x, point.y)
+              } else {
+                ctx.value.lineTo(point.x, point.y)
+              }
+            })
+            ctx.value.stroke()
+          }
+          
+          // 绘制所有点
+          points.value.forEach((point, index) => {
+            ctx.value.fillStyle = isDragging.value && dragIndex.value === index ? '#ff00ff' : '#ff0000'
+            ctx.value.beginPath()
+            ctx.value.arc(point.x, point.y, 8, 0, Math.PI * 2)
+            ctx.value.fill()
+          })
+        }
+
+        // 查找最近的点
+        const findNearestPoint = (x, y) => {
+          let nearestIndex = -1
+          let minDist = 20 // 阈值
+          
+          points.value.forEach((point, index) => {
+            const dist = Math.sqrt((point.x - x) ** 2 + (point.y - y) ** 2)
+            if (dist < minDist) {
+              minDist = dist
+              nearestIndex = index
+            }
+          })
+          
+          return nearestIndex
+        }
+
+        // 鼠标按下事件
+        const handleMouseDown = (e) => {
+          const rect = canvas.value.getBoundingClientRect()
+          const x = e.clientX - rect.left
+          const y = e.clientY - rect.top
+          
+          const index = findNearestPoint(x, y)
+          if (index !== -1) {
+            isDragging.value = true
+            dragIndex.value = index
+            dragOffset.x = x - points.value[index].x
+            dragOffset.y = y - points.value[index].y
+            console.log('开始拖拽点:', index)
+          }
+        }
+
+        // 鼠标移动事件
+        const handleMouseMove = (e) => {
+          if (isDragging.value && dragIndex.value !== -1) {
+            const rect = canvas.value.getBoundingClientRect()
+            const x = e.clientX - rect.left
+            const y = e.clientY - rect.top
+            
+            points.value[dragIndex.value].x = x - dragOffset.x
+            points.value[dragIndex.value].y = y - dragOffset.y
+            
+            drawCanvas()
+            console.log('移动点:', dragIndex.value, '到位置:', points.value[dragIndex.value])
+          }
+        }
+
+        // 鼠标释放事件
+        const handleMouseUp = () => {
+          if (isDragging.value) {
+            isDragging.value = false
+            dragIndex.value = -1
+            console.log('结束拖拽')
+          }
+        }
+
+        // 添加随机点
+        const addRandomPoints = () => {
+          const newPoints = []
+          const count = 6
+          for (let i = 0; i < count; i++) {
+            newPoints.push({
+              x: 100 + Math.random() * 400,
+              y: 100 + Math.random() * 200
+            })
+          }
+          points.value = newPoints
+          drawCanvas()
+        }
+
+        // 清空点
+        const clearPoints = () => {
+          points.value = []
+          drawCanvas()
+        }
+
+        // 生命周期钩子
+        onMounted(() => {
+          initCanvas()
+          
+          // 手动绑定事件（不依赖Vue的事件绑定）
+          if (canvas.value) {
+            canvas.value.addEventListener('mousedown', handleMouseDown)
+            canvas.value.addEventListener('mousemove', handleMouseMove)
+            canvas.value.addEventListener('mouseup', handleMouseUp)
+            canvas.value.addEventListener('mouseleave', handleMouseUp)
+          }
+        })
+
+        return {
+          canvas,
+          addRandomPoints,
+          clearPoints
+        }
+      }
+    }).mount('#app')
+  </script>
+</body>
+</html>
