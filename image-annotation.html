@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>图片物体标注工具</title>
+
+  <!-- 引入库 -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .controls {
+      margin-bottom: 15px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button, input {
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+    #canvas {
+      border: 1px solid #ddd;
+      max-width: 100%;
+      height: auto;
+      display: block;
+    }
+    .info {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>图片物体标注工具</h1>
+    <p>上传图片 → 自动检测 → 编辑区域 → 导出标注</p>
+
+    <div class="controls">
+      <input type="file" id="upload" accept="image/*" />
+      <button id="detect">自动检测物体</button>
+      <button id="addRect">添加新区域</button>
+      <button id="deleteSelected">删除选中</button>
+      <button id="export">导出标注 JSON</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    <div class="info" id="info">请先上传一张图片</div>
+  </div>
+
+  <script>
+    // 初始化
+    const upload = document.getElementById('upload');
+    const detectBtn = document.getElementById('detect');
+    const addRectBtn = document.getElementById('addRect');
+    const deleteBtn = document.getElementById('deleteSelected');
+    const exportBtn = document.getElementById('export');
+    const info = document.getElementById('info');
+    const canvasEl = document.getElementById('canvas');
+    const fabricCanvas = new fabric.Canvas('canvas', { backgroundColor: '#fff' });
+
+    let model = null;
+    let imageName = 'unknown.jpg';
+
+    // 1. 上传图片
+    upload.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      imageName = file.name;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          // 设置画布大小
+          const maxWidth = 900;
+          const scale = Math.min(1, maxWidth / img.width);
+          const width = img.width * scale;
+          const height = img.height * scale;
+
+          fabricCanvas.setWidth(width);
+          fabricCanvas.setHeight(height);
+
+          const fabricImg = new fabric.Image(img, {
+            left: 0,
+            top: 0,
+            scaleX: scale,
+            scaleY: scale,
+            selectable: false
+          });
+          fabricCanvas.setBackgroundImage(fabricImg, fabricCanvas.renderAll.bind(fabricCanvas));
+          fabricCanvas.clear(); // 清除旧标注
+          fabricCanvas.add(fabricImg); // 背景图
+          info.textContent = `已加载图片：${imageName} (${img.width}×${img.height})`;
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // 2. 自动检测
+    detectBtn.addEventListener('click', async () => {
+      if (!model) {
+        info.textContent = '正在加载 AI 模型...';
+        model = await cocoSsd.load();
+        info.textContent = '模型加载完成，点击“自动检测物体”';
+      }
+
+      info.textContent = '正在检测物体...';
+      const imgDataUrl = fabricCanvas.toDataURL('image/png');
+      const img = new Image();
+      img.src = imgDataUrl;
+
+      img.onload = async () => {
+        const predictions = await model.detect(img);
+        const scaleX = fabricCanvas.width / img.width;
+        const scaleY = fabricCanvas.height / img.height;
+
+        const targetClasses = ['person', 'car', 'dining table'];
+        let detectedCount = 0;
+
+        predictions.forEach(pred => {
+          if (targetClasses.includes(pred.class) && pred.score > 0.5) {
+            const [x, y, width, height] = pred.bbox;
+            const rect = new fabric.Rect({
+              left: x * scaleX,
+              top: y * scaleY,
+              width: width * scaleX,
+              height: height * scaleY,
+              fill: 'transparent',
+              stroke: pred.class === 'person' ? '#ff4444' :
+                      pred.class === 'car' ? '#4488ff' : '#44aa44',
+              strokeWidth: 3,
+              selectable: true,
+              hasRotatingPoint: false,
+              data: {
+                class: pred.class,
+                score: pred.score,
+                type: 'detection'
+              }
+            });
+            fabricCanvas.add(rect);
+            detectedCount++;
+          }
+        });
+
+        fabricCanvas.renderAll();
+        info.textContent = `检测完成！共找到 ${detectedCount} 个目标（人、车、桌子）`;
+      };
+    });
+
+    // 3. 添加新区域
+    addRectBtn.addEventListener('click', () => {
+      const rect = new fabric.Rect({
+        left: 100,
+        top: 100,
+        width: 200,
+        height: 150,
+        fill: 'transparent',
+        stroke: '#888',
+        strokeWidth: 2,
+        strokeDashArray: [5, 5],
+        selectable: true,
+        data: { class: 'custom', type: 'manual' }
+      });
+      fabricCanvas.add(rect);
+      fabricCanvas.setActiveObject(rect);
+      info.textContent = '已添加新区域，可拖动调整';
+    });
+
+    // 4. 删除选中
+    deleteBtn.addEventListener('click', () => {
+      const active = fabricCanvas.getActiveObject();
+      if (active) {
+        fabricCanvas.remove(active);
+        info.textContent = '已删除选中区域';
+      } else {
+        info.textContent = '请先选中一个区域';
+      }
+    });
+
+    // 5. 双击矩形 → 转为多边形（精细编辑边缘）
+    fabricCanvas.on('mouse:dblclick', (e) => {
+      const obj = e.target;
+      if (obj && obj.type === 'rect') {
+        const points = [
+          { x: obj.left, y: obj.top },
+          { x: obj.left + obj.width, y: obj.top },
+          { x: obj.left + obj.width, y: obj.top + obj.height },
+          { x: obj.left, y: obj.top + obj.height }
+        ];
+        const polygon = new fabric.Polygon(points, {
+          fill: 'rgba(0,150,255,0.1)',
+          stroke: obj.stroke,
+          strokeWidth: obj.strokeWidth,
+          selectable: true,
+          objectCaching: false,
+          data: obj.data
+        });
+        fabricCanvas.remove(obj);
+        fabricCanvas.add(polygon);
+        fabricCanvas.setActiveObject(polygon);
+        info.textContent = '已转为多边形，可拖动顶点编辑边缘';
+      }
+    });
+
+    // 6. 导出标注
+    exportBtn.addEventListener('click', () => {
+      const annotations = [];
+      const imageWidth = fabricCanvas.width;
+      const imageHeight = fabricCanvas.height;
+
+      fabricCanvas.getObjects().forEach(obj => {
+        if (obj.type === 'rect' || obj.type === 'polygon') {
+          let bbox = null;
+          let segmentation = null;
+
+          if (obj.type === 'rect') {
+            bbox = [
+              Math.round(obj.left),
+              Math.round(obj.top),
+              Math.round(obj.width),
+              Math.round(obj.height)
+            ];
+            segmentation = [
+              obj.left, obj.top,
+              obj.left + obj.width, obj.top,
+              obj.left + obj.width, obj.top + obj.height,
+              obj.left, obj.top + obj.height
+            ];
+          } else if (obj.type === 'polygon') {
+            const points = obj.points.map(p => ({
+              x: obj.left + p.x * obj.scaleX,
+              y: obj.top + p.y * obj.scaleY
+            }));
+            const xs = points.map(p => p.x);
+            const ys = points.map(p => p.y);
+            const minX = Math.min(...xs), maxX = Math.max(...xs);
+            const minY = Math.min(...ys), maxY = Math.max(...ys);
+            bbox = [Math.round(minX), Math.round(minY), Math.round(maxX - minX), Math.round(maxY - minY)];
+            segmentation = points.flatMap(p => [Math.round(p.x), Math.round(p.y)]);
+          }
+
+          annotations.push({
+            category: obj.data.class,
+            confidence: obj.data.score || null,
+            bbox: bbox,
+            segmentation: segmentation,
+            area: bbox ? bbox[2] * bbox[3] : null
+          });
+        }
+      });
+
+      const exportData = {
+        image: imageName,
+        image_width: imageWidth,
+        image_height: imageHeight,
+        annotations: annotations
+      };
+
+      const json = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      saveAs(blob, `${imageName.split('.')[0]}_annotations.json`);
+      info.textContent = `已导出 ${annotations.length} 个标注到 JSON 文件`;
+    });
+
+    // 初始化提示
+    info.textContent = '请上传一张图片开始标注';
+  </script>
+</body>
+</html>

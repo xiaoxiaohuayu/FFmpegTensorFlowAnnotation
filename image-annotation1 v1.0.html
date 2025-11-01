@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>图片标注工具（BodyPix 版）</title>
+
+  <!-- 轻量库 -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+  <style>
+    body{font-family:Arial;margin:20px;background:#f5f5f5}
+    .container{max-width:1200px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+    .controls{margin-bottom:15px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    button,input{padding:8px 12px;font-size:14px}
+    #canvas{border:1px solid #ddd;max-width:100%;display:block}
+    .info{margin-top:10px;font-size:14px;color:#666}
+    .status{margin-left:10px;font-weight:bold;color:#007bff}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>图片标注工具（轻量版）</h1>
+    <p>上传 → 自动检测 → 道路/天空分割 → 多边形编辑 → 导出 JSON</p>
+
+    <div class="controls">
+      <input type="file" id="upload" accept="image/*">
+      <button id="detect">自动检测（人/车）</button>
+      <button id="segment">背景分割（道路/天空）</button>
+      <span id="status" class="status" style="display:none">处理中...</span>
+      <button id="addRect">添加区域</button>
+      <button id="delete">删除选中</button>
+      <button id="addPoint">添加顶点</button>
+      <button id="removePoint">删除顶点</button>
+      <button id="export">导出 JSON</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    <div class="info" id="info">请上传一张图片</div>
+  </div>
+
+  <script>
+    const canvas = new fabric.Canvas('canvas', { backgroundColor: '#fff' });
+    const info = document.getElementById('info');
+    const status = document.getElementById('status');
+    let model = null;
+    let imageName = 'image.jpg';
+
+    // 上传图片
+    document.getElementById('upload').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      imageName = file.name;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = new Image();
+        img.onload = () => {
+          const maxW = 900, s = Math.min(1, maxW / img.width);
+          canvas.setWidth(img.width * s);
+          canvas.setHeight(img.height * s);
+          const fimg = new fabric.Image(img, { left:0, top:0, scaleX:s, scaleY:s, selectable:false });
+          canvas.setBackgroundImage(fimg, canvas.renderAll.bind(canvas));
+          canvas.clear(); canvas.add(fimg);
+          info.textContent = `已加载：${imageName}`;
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // 加载模型
+    async function loadModel() {
+      if (!model) {
+        status.style.display = 'inline';
+        status.textContent = '加载模型…';
+        model = await bodyPix.load({ architecture: 'MobileNetV1', outputStride: 16, multiplier: 0.5 });
+        status.style.display = 'none';
+      }
+      return model;
+    }
+
+    // 自动检测（人/车）
+    document.getElementById('detect').addEventListener('click', async () => {
+      const m = await loadModel();
+      status.style.display = 'inline'; status.textContent = '检测中…';
+      const img = new Image(); img.src = canvas.toDataURL();
+      img.onload = async () => {
+        const segmentation = await m.segmentPersonParts(img);
+        const scaleX = canvas.width / img.width;
+        const scaleY = canvas.height / img.height;
+
+        // 提取 person 和 car（BodyPix 没有 car，用 person 代替，或手动添加）
+        const parts = [0, 1]; // 0: torso, 1: head
+        for (const partId of parts) {
+          const mask = segmentation.data;
+          const width = segmentation.width, height = segmentation.height;
+          let points = [];
+          for (let y = 0; y < height; y += 10) {
+            for (let x = 0; x < width; x += 10) {
+              if (mask[y * width + x] === partId) {
+                points.push({ x: x * scaleX, y: y * scaleY });
+              }
+            }
+          }
+          if (points.length > 10) {
+            const hull = convexHull(points);
+            const poly = new fabric.Polygon(hull, {
+              fill: 'rgba(255,0,0,0.3)', stroke: '#ff0000', strokeWidth: 3,
+              selectable: true, data: { class: 'person', type: 'detection' }
+            });
+            canvas.add(poly);
+          }
+        }
+        canvas.renderAll();
+        status.style.display = 'none';
+        info.textContent = '检测完成';
+      };
+    });
+
+    // 背景分割（道路/天空）
+    document.getElementById('segment').addEventListener('click', async () => {
+      const m = await loadModel();
+      status.style.display = 'inline'; status.textContent = '分割背景…';
+      const img = new Image(); img.src = canvas.toDataURL();
+      img.onload = async () => {
+        const segmentation = await m.segmentPersonParts(img);
+        const scaleX = canvas.width / img.width;
+        const scaleY = canvas.height / img.height;
+
+        // 背景 = 非 person 区域
+        const mask = segmentation.data;
+        const width = segmentation.width, height = segmentation.height;
+        let bgPoints = [];
+        for (let y = 0; y < height; y += 5) {
+          for (let x = 0; x < width; x += 5) {
+            if (mask[y * width + x] === -1) { // -1 = background
+              bgPoints.push({ x: x * scaleX, y: y * scaleY });
+            }
+          }
+        }
+        if (bgPoints.length > 50) {
+          const hull = convexHull(bgPoints);
+          const poly = new fabric.Polygon(hull, {
+            fill: 'rgba(0,150,255,0.2)', stroke: '#0066cc', strokeWidth: 3,
+            selectable: true, data: { class: 'background', type: 'segmentation' }
+          });
+          canvas.add(poly);
+          enterEditMode(poly);
+        }
+        canvas.renderAll();
+        status.style.display = 'none';
+        info.textContent = '背景分割完成';
+      };
+    });
+
+    // 凸包（简化轮廓）
+    function convexHull(points) {
+      if (points.length < 3) return points;
+      points.sort((a,b) => a.x - b.x || a.y - b.y);
+      const hull = [];
+      for (let i = 0; i < points.length; i++) {
+        while (hull.length >= 2 && cross(hull[hull.length-2], hull[hull.length-1], points[i]) <= 0) {
+          hull.pop();
+        }
+        hull.push(points[i]);
+      }
+      const lower = hull.slice();
+      for (let i = points.length - 2; i >= 0; i--) {
+        while (hull.length >= 2 && cross(hull[hull.length-2], hull[hull.length-1], points[i]) <= 0) {
+          hull.pop();
+        }
+        hull.push(points[i]);
+      }
+      return hull.slice(0, -1);
+    }
+    function cross(o, a, b) {
+      return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    }
+
+    // 多边形编辑模式
+    function enterEditMode(poly) {
+      poly.edit = true; poly.cornerStyle = 'circle'; poly.cornerColor = 'blue';
+      const last = poly.points.length - 1;
+      poly.controls = poly.points.reduce((acc, pt, i) => {
+        acc['p' + i] = new fabric.Control({
+          positionHandler: (dim, finalMatrix, fabricObject) => {
+            const p = fabricObject.points[i];
+            return fabric.util.transformPoint(
+              { x: p.x - fabricObject.pathOffset.x, y: p.y - fabricObject.pathOffset.y },
+              fabric.util.multiplyTransformMatrices(fabricObject.canvas.viewportTransform, fabricObject.calcTransformMatrix())
+            );
+          },
+          actionHandler: (e, t, x, y) => {
+            const mouse = poly.toLocalPoint(new fabric.Point(x, y), 'center', 'center');
+            const size = poly._getTransformedDimensions(0, 0);
+            const base = new fabric.Point(poly.width, poly.height);
+            poly.points[i] = { x: mouse.x * base.x / size.x + poly.pathOffset.x, y: mouse.y * base.y / size.y + poly.pathOffset.y };
+            return true;
+          },
+          pointIndex: i
+        });
+        return acc;
+      }, {});
+      poly.hasBorders = false;
+      canvas.renderAll();
+    }
+
+    // 其余按钮
+    document.getElementById('addRect').addEventListener('click', () => {
+      const r = new fabric.Rect({ left:100, top:100, width:200, height:150, fill:'transparent', stroke:'#888', strokeWidth:2, selectable:true, data:{class:'custom'} });
+      canvas.add(r); canvas.setActiveObject(r);
+    });
+
+    document.getElementById('delete').addEventListener('click', () => {
+      const o = canvas.getActiveObject();
+      if (o) { canvas.remove(o); }
+    });
+
+    document.getElementById('addPoint').addEventListener('click', () => {
+      const o = canvas.getActiveObject();
+      if (o && o.type === 'polygon') {
+        const last = o.points[o.points.length-1];
+        o.points.push({ x: last.x + 20, y: last.y + 20 });
+        o.setCoords(); enterEditMode(o);
+        canvas.renderAll();
+      }
+    });
+
+    document.getElementById('removePoint').addEventListener('click', () => {
+      const o = canvas.getActiveObject();
+      if (o && o.type === 'polygon' && o.points.length > 3) {
+        o.points.pop(); o.setCoords(); enterEditMode(o);
+        canvas.renderAll();
+      }
+    });
+
+    document.getElementById('export').addEventListener('click', () => {
+      const ann = [];
+      canvas.getObjects().forEach(o => {
+        if (o.type === 'rect' || o.type === 'polygon') {
+          const pts = o.type === 'rect'
+            ? [{x:o.left,y:o.top},{x:o.left+o.width,y:o.top},{x:o.left+o.width,y:o.top+o.height},{x:o.left,y:o.top+o.height}]
+            : o.points.map(p => ({ x: o.left + (p.x - o.pathOffset.x) * o.scaleX, y: o.top + (p.y - o.pathOffset.y) * o.scaleY }));
+          const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+          const bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys)];
+          ann.push({ category: o.data.class, bbox, segmentation: pts.flatMap(p=>[p.x,p.y]) });
+        }
+      });
+      const blob = new Blob([JSON.stringify({image:imageName, annotations:ann},null,2)], {type:'application/json'});
+      saveAs(blob, `${imageName.split('.')[0]}_labels.json`);
+      info.textContent = `已导出 ${ann.length} 个标注`;
+    });
+
+    // 双击矩形 → 多边形
+    canvas.on('mouse:dblclick', e => {
+      const o = e.target;
+      if (o && o.type === 'rect') {
+        const pts = [{x:o.left,y:o.top},{x:o.left+o.width,y:o.top},{x:o.left+o.width,y:o.top+o.height},{x:o.left,y:o.top+o.height}];
+        const poly = new fabric.Polygon(pts, { fill:'rgba(0,150,255,0.1)', stroke:o.stroke, strokeWidth:o.strokeWidth, selectable:true, data:o.data });
+        canvas.remove(o).add(poly); enterEditMode(poly); canvas.setActiveObject(poly);
+      }
+    });
+
+    info.textContent = '请上传图片开始标注';
+  </script>
+</body>
+</html>
